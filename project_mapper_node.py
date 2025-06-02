@@ -1,33 +1,42 @@
+import numpy as np
 import rclpy
+import tf2_ros
+import tf_transformations
+from geometry_msgs.msg import TransformStamped
+from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
-from nav_msgs.msg import OccupancyGrid
-import tf_transformations
-import tf2_ros
-from geometry_msgs.msg import TransformStamped
-import numpy as np
+from tf2_ros import StaticTransformBroadcaster
+
 
 class MapperNode(Node):
     def __init__(self):
-        super().__init__('project_mapper_node')
+        super().__init__("project_mapper_node")
+        self.br = StaticTransformBroadcaster(self)
+
+        t = TransformStamped()
+        t.header.frame_id = "/map"
+        t.child_frame_id = "odom"
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.transform.translation.x = 0.0
+        t.transform.translation.y = 0.0
+        t.transform.rotation.w = 1.0
+        self.br.sendTransform(t)
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.scan_sub = self.create_subscription(
-            LaserScan,
-            '/scan',
-            self.laser_callback,
-            10
+            LaserScan, "/scan", self.laser_callback, 10
         )
 
-        self.map_pub = self.create_publisher(OccupancyGrid, '/map', 10)
+        self.map_pub = self.create_publisher(OccupancyGrid, "/map", 10)
 
         self.grid_size = 100
         self.resolution = 0.1
         self.map = np.full((self.grid_size, self.grid_size), -1, dtype=np.int8)
 
-        self.get_logger().info('MapperNode initialized.')
+        self.get_logger().info("MapperNode initialized.")
 
     def world_to_map(self, x, y):
         i = int((x + (self.grid_size * self.resolution / 2)) / self.resolution)
@@ -72,7 +81,7 @@ class MapperNode(Node):
     def publish_map(self):
         msg = OccupancyGrid()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'odom'
+        msg.header.frame_id = "odom"
         msg.info.resolution = self.resolution
         msg.info.width = self.grid_size
         msg.info.height = self.grid_size
@@ -83,28 +92,29 @@ class MapperNode(Node):
         msg.data = self.map.flatten().tolist()
         self.map_pub.publish(msg)
 
-        self.get_logger().info(f"Published map: free={(self.map == 0).sum()}, occ={(self.map == 100).sum()}")
+        self.get_logger().info(
+            f"Published map: free={(self.map == 0).sum()}, occ={(self.map == 100).sum()}"
+        )
 
     def laser_callback(self, msg: LaserScan):
-        self.get_logger().info('Laser callback triggered')
+        self.get_logger().info("Laser callback triggered")
 
         try:
             now = rclpy.time.Time()
             transform: TransformStamped = self.tf_buffer.lookup_transform(
-                'odom',  
-                'laser',
-                now,
-                timeout=rclpy.duration.Duration(seconds=1.0)
+                "odom", "laser", now, timeout=rclpy.duration.Duration(seconds=1.0)
             )
 
             tx = transform.transform.translation.x
             ty = transform.transform.translation.y
-            yaw = tf_transformations.euler_from_quaternion([
-                transform.transform.rotation.x,
-                transform.transform.rotation.y,
-                transform.transform.rotation.z,
-                transform.transform.rotation.w
-            ])[2]
+            yaw = tf_transformations.euler_from_quaternion(
+                [
+                    transform.transform.rotation.x,
+                    transform.transform.rotation.y,
+                    transform.transform.rotation.z,
+                    transform.transform.rotation.w,
+                ]
+            )[2]
 
             angle = msg.angle_min
             for r in msg.ranges:
@@ -133,15 +143,29 @@ class MapperNode(Node):
             self.publish_map()
 
         except Exception as e:
-            self.get_logger().warn(f'Transform error: {e}')
+            self.get_logger().warn(f"Transform error: {e}")
+
+    def spin(self):
+        # Simply spin the ROS node.
+        while rclpy.ok():
+            try:
+                rclpy.spin_once(self)
+            except Exception as e:
+                self.get_logger().warn(f"Waiting for Published Transform... {e}")
+                rclpy.sleep(1.0)
+
 
 def main(args=None):
     rclpy.init(args=args)
     node = MapperNode()
     try:
-        rclpy.spin(node)
+        node.spin()
     except KeyboardInterrupt:
-        node.get_logger().info('Shutting down MapperNode.')
+        node.get_logger().info("Shutting down MapperNode.")
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
