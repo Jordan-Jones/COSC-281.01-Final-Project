@@ -5,6 +5,7 @@ import tf_transformations
 from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import LaserScan
 from tf2_ros import StaticTransformBroadcaster
 
@@ -15,7 +16,7 @@ class MapperNode(Node):
         self.br = StaticTransformBroadcaster(self)
 
         t = TransformStamped()
-        t.header.frame_id = "/map"
+        t.header.frame_id = "map"
         t.child_frame_id = "odom"
         t.header.stamp = self.get_clock().now().to_msg()
         t.transform.translation.x = 0.0
@@ -27,10 +28,11 @@ class MapperNode(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.scan_sub = self.create_subscription(
-            LaserScan, "/scan", self.laser_callback, 10
+            LaserScan, "scan", self.laser_callback, 10
         )
 
-        self.map_pub = self.create_publisher(OccupancyGrid, "/map", 10)
+        qos = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.map_pub = self.create_publisher(OccupancyGrid, "/map", qos)
 
         self.grid_size = 100
         self.resolution = 0.1
@@ -81,7 +83,7 @@ class MapperNode(Node):
     def publish_map(self):
         msg = OccupancyGrid()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "odom"
+        msg.header.frame_id = "map"
         msg.info.resolution = self.resolution
         msg.info.width = self.grid_size
         msg.info.height = self.grid_size
@@ -102,7 +104,10 @@ class MapperNode(Node):
         try:
             now = rclpy.time.Time()
             transform: TransformStamped = self.tf_buffer.lookup_transform(
-                "odom", "laser", now, timeout=rclpy.duration.Duration(seconds=1.0)
+                "odom",
+                "laser",
+                now,
+                timeout=rclpy.duration.Duration(seconds=1.0),
             )
 
             tx = transform.transform.translation.x

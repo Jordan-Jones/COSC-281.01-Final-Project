@@ -3,75 +3,76 @@
 # Author: Vincent Vey
 
 # Import of python modules.
-import math # use of pi.
-import numpy as np # use of numpy for array manipulation
-from collections import deque 
-import cv2 # use for wall inflation
+import math  # use of pi.
+
+import cv2  # use for wall inflation
+import numpy as np  # use of numpy for array manipulation
 
 # import of relevant libraries.
-import rclpy # module for ROS APIs
-from rclpy.node import Node
-from geometry_msgs.msg import Twist # message type for cmd_vel
-from nav_msgs.msg import OccupancyGrid
-from rclpy.duration import Duration 
+import rclpy  # module for ROS APIs
+import tf2_ros  # library for transformations.
+from geometry_msgs.msg import Twist  # message type for cmd_vel
 from geometry_msgs.msg import Pose, PoseArray
-
-
-import tf2_ros # library for transformations.
-from tf_transformations import euler_from_quaternion
-from tf_transformations import quaternion_from_euler
-
+from nav_msgs.msg import OccupancyGrid
+from rclpy.duration import Duration
+from rclpy.node import Node
+from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
 # Topic names
-DEFAULT_CMD_VEL_TOPIC = 'cmd_vel'
-DEFAULT_SCAN_TOPIC = 'base_scan'
-DEFAULT_MAP_TOPIC = 'map'
-DEFAULT_POSE_TOPIC = 'pose_sequence'
+DEFAULT_CMD_VEL_TOPIC = "cmd_vel"
+DEFAULT_SCAN_TOPIC = "base_scan"
+DEFAULT_MAP_TOPIC = "map"
+DEFAULT_POSE_TOPIC = "pose_sequence"
 
 # Frequency at which the loop operates
-FREQUENCY = 10 #Hz.
+FREQUENCY = 10  # Hz.
 
-# Default Velocities that will be used 
-LINEAR_VELOCITY = 0.125 # m/s
-ANGULAR_VELOCITY = math.pi/4 # rad/s
+# Default Velocities that will be used
+LINEAR_VELOCITY = 0.125  # m/s
+ANGULAR_VELOCITY = math.pi / 4  # rad/s
 
 USE_SIM_TIME = True
 
 # constants
-TF_BASE_LINK = 'rosbot/base_link'
-TF_ODOM = 'rosbot/odom'
-TF_MAP = 'map'
+TF_BASE_LINK = "rosbot/base_link"
+TF_ODOM = "rosbot/odom"
+TF_MAP = "map"
 
-class GridNode():
-    def __init__ (self, x, y):
+
+class GridNode:
+    def __init__(self, x, y):
         self.x = x
         self.y = y
         self.parent = None
-        self.g = float('inf')
-        self.h = float('inf')
-        self.f = float('inf')
-        self.dir_from_parent = None 
+        self.g = float("inf")
+        self.h = float("inf")
+        self.f = float("inf")
+        self.dir_from_parent = None
 
     def __eq__(self, node):
         return self.x == node.x and self.y == node.y
 
     def __hash__(self):
         return hash((self.x, self.y))
-    
+
     def __lt__(self, other):
         return self.f < other.f
 
+
 class SearchMaze(Node):
-    def __init__(self, linear_velocity=LINEAR_VELOCITY, angular_velocity=ANGULAR_VELOCITY,
-        node_name="searchMaze", context=None):
+    def __init__(
+        self,
+        linear_velocity=LINEAR_VELOCITY,
+        angular_velocity=ANGULAR_VELOCITY,
+        node_name="searchMaze",
+        context=None,
+    ):
         """Constructor."""
         super().__init__(node_name, context=context)
 
         # Workaround not to use roslaunch
         use_sim_time_param = rclpy.parameter.Parameter(
-            'use_sim_time',
-            rclpy.Parameter.Type.BOOL,
-            USE_SIM_TIME
+            "use_sim_time", rclpy.Parameter.Type.BOOL, USE_SIM_TIME
         )
         self.set_parameters([use_sim_time_param])
 
@@ -80,11 +81,13 @@ class SearchMaze(Node):
         self._cmd_pub = self.create_publisher(Twist, DEFAULT_CMD_VEL_TOPIC, 1)
         self._pose_pub = self.create_publisher(PoseArray, DEFAULT_POSE_TOPIC, 1)
 
-        self._map_sub = self.create_subscription(OccupancyGrid, DEFAULT_MAP_TOPIC, self._map_callback, 1)
+        self._map_sub = self.create_subscription(
+            OccupancyGrid, DEFAULT_MAP_TOPIC, self._map_callback, 1
+        )
 
         # Parameters.
-        self.linear_velocity = linear_velocity # Constant linear velocity set.
-        self.angular_velocity = angular_velocity # Constant angular velocity set.
+        self.linear_velocity = linear_velocity  # Constant linear velocity set.
+        self.angular_velocity = angular_velocity  # Constant angular velocity set.
 
         # Rate at which to operate the while loop.
         self.rate = self.create_rate(FREQUENCY)
@@ -103,7 +106,7 @@ class SearchMaze(Node):
         twist_msg.linear.x = linear_vel
         twist_msg.angular.z = angular_vel
         self._cmd_pub.publish(twist_msg)
-    
+
     def stop(self):
         """Stop the robot."""
         twist_msg = Twist()
@@ -118,10 +121,10 @@ class SearchMaze(Node):
 
     def move_straight(self, distance, linear_vel=LINEAR_VELOCITY):
         """Move straight for a given distance."""
-     
+
         self.get_logger().info(f"Moving straight for {distance} m.")
         duration = Duration(seconds=(distance / linear_vel))
-        
+
         start_time = self.get_clock().now()
         while (self.get_clock().now() - start_time) <= duration and rclpy.ok():
             self.move(linear_vel, 0.0)
@@ -137,7 +140,7 @@ class SearchMaze(Node):
         duration = Duration(seconds=(abs(angle) / angular_vel))
         start_time = self.get_clock().now()
         while (self.get_clock().now() - start_time) <= duration and rclpy.ok():
-            if (angle > 0):
+            if angle > 0:
                 self.move(0.0, angular_vel)
             else:
                 self.move(0.0, (-1 * angular_vel))
@@ -147,7 +150,9 @@ class SearchMaze(Node):
     def wait(self, duration):
         """Wait for a given duration."""
         start_time = self.get_clock().now()
-        while (self.get_clock().now() - start_time).nanoseconds <= (duration * 1e9) and rclpy.ok():
+        while (self.get_clock().now() - start_time).nanoseconds <= (
+            duration * 1e9
+        ) and rclpy.ok():
             rclpy.spin_once(self)
         self.stop()
 
@@ -158,38 +163,45 @@ class SearchMaze(Node):
 
         # Get the current position of the robot
         now = rclpy.time.Time()
-        self.move_straight(0.01) # Trick to get the odom tf to update
-        
+        self.move_straight(0.01)  # Trick to get the odom tf to update
+
         curr_x = waypoints[0][0]
         curr_y = waypoints[0][1]
         curr_theta = waypoints[0][2]
 
-        resolution = 0.05 # 5cm resolution
-        for (target_x, target_y, target_theta) in waypoints[1:]:
+        resolution = 0.1  # 5cm resolution
+        for target_x, target_y, target_theta in waypoints[1:]:
             # Calculate the difference between the target and current position
-            
+
             dx = (target_x - curr_x) * resolution
             dy = (target_y - curr_y) * resolution
             d_theta = math.atan2(dy, dx) - curr_theta
-            d_theta = (d_theta + math.pi) % (2 * math.pi) - math.pi # Normalize to [-pi, pi]
+            d_theta = (d_theta + math.pi) % (
+                2 * math.pi
+            ) - math.pi  # Normalize to [-pi, pi]
 
             dis_2_target = math.hypot(dy, dx)
 
             # Move to target
             self.turn(d_theta)
             self.move_straight(dis_2_target)
-            
+
             # Update current position
             now = rclpy.time.Time()
             transform = self.tf_buffer.lookup_transform(
-                TF_MAP,       # target_frame
+                TF_MAP,  # target_frame
                 TF_BASE_LINK,  # source_frame
-                now
+                now,
             )
 
-            curr_x = (transform.transform.translation.x)/resolution
-            curr_y = (transform.transform.translation.y)/resolution
-            curr_q = [transform.transform.rotation.x, transform.transform.rotation.y, transform.transform.rotation.z, transform.transform.rotation.w]
+            curr_x = (transform.transform.translation.x) / resolution
+            curr_y = (transform.transform.translation.y) / resolution
+            curr_q = [
+                transform.transform.rotation.x,
+                transform.transform.rotation.y,
+                transform.transform.rotation.z,
+                transform.transform.rotation.w,
+            ]
             _, _, curr_theta = euler_from_quaternion(curr_q)
 
         self.get_logger().info("Done drawing polygon.")
@@ -209,10 +221,10 @@ class SearchMaze(Node):
         # Return inflated map: mark inflated cells as occupied (e.g., 100), rest as original
         inflated_map = np.where(inflated == 1, 100, 0)
         return inflated_map
-    
+
     def backchain(self, child_node):
         "Backchaning from target to start"
-        
+
         solution = []
         node = child_node
         while node:
@@ -228,10 +240,10 @@ class SearchMaze(Node):
             node = node.parent
 
         return solution
-    
+
     def angle_between(self, v1, v2):
         """Return angle in radians between two 2D vectors."""
-        dot = v1[0]*v2[0] + v1[1]*v2[1]
+        dot = v1[0] * v2[0] + v1[1] * v2[1]
         mag1 = math.hypot(*v1)
         mag2 = math.hypot(*v2)
         if mag1 == 0 or mag2 == 0:
@@ -239,7 +251,6 @@ class SearchMaze(Node):
         cos_angle = dot / (mag1 * mag2)
         angle = math.acos(max(min(cos_angle, 1), -1))
         return angle
-
 
     def a_star(self, start, goal, map_grid):
         def h(node, goal):
@@ -265,22 +276,70 @@ class SearchMaze(Node):
         node_map[(startx, starty)] = start_node
 
         directions = [
-            (1, 0), (0, -1), (-1, 0), (0, 1),          # cardinal
-            (1, 1), (-1, -1), (-1, 1), (1, -1),        # diagonal
-            (2, 1), (1, 2), (-2, 1), (-1, 2),
-            (-2, -1), (-1, -2), (2, -1), (1, -2),
-            (3, 1), (1, -3), (-3, 1), (1, 3),
-            (-3, -1), (-1, -3), (3, -1), (-1, 3),
-            (4, 1), (1, -4), (-4, 1), (1, 4),
-            (-4, -1), (-1, -4), (4, -1), (-1, 4),
-            (5, 1), (1, -5), (-5, 1), (1, 5),
-            (-5, -1), (-1, -5), (5, -1), (-1, 5),
-            (6, 1), (1, -6), (-6, 1), (1, 6),
-            (-6, -1), (-1, -6), (6, -1), (-1, 6),
-            (7, 1), (1, -7), (-7, 1), (1, 7),
-            (-7, -1), (-1, -7), (7, -1), (-1, 7),
-            (8, 1), (1, -8), (-8, 1), (1, 8),
-            (-8, -1), (-1, -8), (8, -1), (-1, 8)
+            (1, 0),
+            (0, -1),
+            (-1, 0),
+            (0, 1),  # cardinal
+            (1, 1),
+            (-1, -1),
+            (-1, 1),
+            (1, -1),  # diagonal
+            (2, 1),
+            (1, 2),
+            (-2, 1),
+            (-1, 2),
+            (-2, -1),
+            (-1, -2),
+            (2, -1),
+            (1, -2),
+            (3, 1),
+            (1, -3),
+            (-3, 1),
+            (1, 3),
+            (-3, -1),
+            (-1, -3),
+            (3, -1),
+            (-1, 3),
+            (4, 1),
+            (1, -4),
+            (-4, 1),
+            (1, 4),
+            (-4, -1),
+            (-1, -4),
+            (4, -1),
+            (-1, 4),
+            (5, 1),
+            (1, -5),
+            (-5, 1),
+            (1, 5),
+            (-5, -1),
+            (-1, -5),
+            (5, -1),
+            (-1, 5),
+            (6, 1),
+            (1, -6),
+            (-6, 1),
+            (1, 6),
+            (-6, -1),
+            (-1, -6),
+            (6, -1),
+            (-1, 6),
+            (7, 1),
+            (1, -7),
+            (-7, 1),
+            (1, 7),
+            (-7, -1),
+            (-1, -7),
+            (7, -1),
+            (-1, 7),
+            (8, 1),
+            (1, -8),
+            (-8, 1),
+            (1, 8),
+            (-8, -1),
+            (-1, -8),
+            (8, -1),
+            (-1, 8),
         ]
 
         while open_set:
@@ -296,16 +355,19 @@ class SearchMaze(Node):
             for dx, dy in directions:
                 nx, ny = curr_node.x + dx, curr_node.y + dy
 
-                if not (0 <= nx < map_width and 0 <= ny < map_height): # bounds check
+                if not (0 <= nx < map_width and 0 <= ny < map_height):  # bounds check
                     continue
-                if map_grid[ny][nx] != 0: # check if the cell is free
+                if map_grid[ny][nx] != 0:  # check if the cell is free
                     continue
-                if (nx, ny) in closed_set: # already evaluated
+                if (nx, ny) in closed_set:  # already evaluated
                     continue
 
                 # Prevent corner-cutting
                 if dx != 0 and dy != 0:
-                    if map_grid[curr_node.y][curr_node.x + dx] != 0 or map_grid[curr_node.y + dy][curr_node.x] != 0:
+                    if (
+                        map_grid[curr_node.y][curr_node.x + dx] != 0
+                        or map_grid[curr_node.y + dy][curr_node.x] != 0
+                    ):
                         continue
 
                 direction = (dx, dy)
@@ -337,15 +399,14 @@ class SearchMaze(Node):
         self.get_logger().info("No path found to goal.")
         return None
 
-
     def publish_path(self, path):
         """Publish the path as a PoseArray."""
         pose_arr = PoseArray()
-        pose_arr.header.frame_id = 'map'
+        pose_arr.header.frame_id = "map"
         pose_arr.header.stamp = self.get_clock().now().to_msg()
-        resolution = 0.05  # 5cm resolution
+        resolution = 0.1  # 5cm resolution
 
-        for (x, y, theta) in path:
+        for x, y, theta in path:
             pose = Pose()
             pose.position.x = x * resolution
             pose.position.y = y * resolution
@@ -366,31 +427,37 @@ class SearchMaze(Node):
     def get_curr_pose(self):
         """Get the current pose of the robot in the map frame."""
         try:
-            self.move_straight(0.01) # Trick to get the odom tf to update
-            self.wait(1) # Wait for the transform to be available
+            self.move_straight(0.01)  # Trick to get the odom tf to update
+            self.wait(1)  # Wait for the transform to be available
 
             now = rclpy.time.Time()
             transform = self.tf_buffer.lookup_transform(
-                TF_MAP,       # target_frame
+                TF_MAP,  # target_frame
                 TF_BASE_LINK,  # source_frame
-                now
+                now,
             )
-  
-            resolution = 0.05 # 5cm resolution
+
+            resolution = 0.1  # 5cm resolution
 
             curr_x = transform.transform.translation.x / resolution
             curr_y = transform.transform.translation.y / resolution
-            curr_q = [transform.transform.rotation.x, transform.transform.rotation.y, transform.transform.rotation.z, transform.transform.rotation.w]
+            curr_q = [
+                transform.transform.rotation.x,
+                transform.transform.rotation.y,
+                transform.transform.rotation.z,
+                transform.transform.rotation.w,
+            ]
             _, _, curr_theta = euler_from_quaternion(curr_q)
-                   
+
             return curr_x, curr_y, curr_theta
-        
+
         except tf2_ros.TransformException as e:
             self.get_logger().warn(f"Could not transform: {e}")
             return None
 
-    def prompt_and_run(self):
+    def spin(self):
         """Prompt user and run pathfinding"""
+        self.move_straight(0.01)  # Trick to get the odom tf to update
         print("hello world")
         while rclpy.ok():
             if self.map_grid_msg is None:
@@ -399,7 +466,9 @@ class SearchMaze(Node):
                 continue
 
             try:
-                input_str = input("Enter goal coordinate (x, y) with x and y between 0 and 200: ")
+                input_str = input(
+                    "Enter goal coordinate (x, y) with x and y between 0 and 200: "
+                )
                 x_str, y_str = input_str.strip("() ").split(",")
                 x = int(x_str)
                 y = int(y_str)
@@ -415,14 +484,20 @@ class SearchMaze(Node):
                     continue
 
                 curr_x, curr_y, theta = pose
-                self.get_logger().info(f"Current pose: x={curr_x}, y={curr_y}, theta={theta}")
+                self.get_logger().info(
+                    f"Current pose: x={curr_x}, y={curr_y}, theta={theta}"
+                )
 
-                map_grid = np.array(self.map_grid_msg.data).reshape((self.map_grid_msg.info.height, self.map_grid_msg.info.width))
-                map_grid = self.inflate_obstacles(map_grid, robot_radius_m=0.35, resolution=0.05)
+                map_grid = np.array(self.map_grid_msg.data).reshape(
+                    (self.map_grid_msg.info.height, self.map_grid_msg.info.width)
+                )
+                map_grid = self.inflate_obstacles(
+                    map_grid, robot_radius_m=0.35, resolution=0.1
+                )
                 solution = self.a_star((int(curr_x), int(curr_y)), (x, y), map_grid)
 
                 self.publish_path(solution)
-                
+
                 if solution is None:
                     self.get_logger().warn("No solution found.")
                     continue
@@ -432,7 +507,8 @@ class SearchMaze(Node):
                 self.get_logger().info("Done following path.")
 
             except ValueError:
-                print("Invalid input format. Please enter in the form: x, y") 
+                print("Invalid input format. Please enter in the form: x, y")
+
 
 def main(args=None):
     """Main function."""
@@ -445,10 +521,10 @@ def main(args=None):
 
     try:
         rclpy.spin_once(search_maze)
-        search_maze.move_straight(0.01) # Trick to get the odom tf to update
-        search_maze.prompt_and_run()
+        search_maze.move_straight(0.01)  # Trick to get the odom tf to update
+        search_maze.spin()
         rclpy.spin_once(search_maze)
-    
+
     except KeyboardInterrupt:
         interrupted = True
         search_maze.get_logger().error("ROS node interrupted.")
